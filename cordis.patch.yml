@@ -1,0 +1,4 @@
+- insert:
+    - id: native-retract
+      name: '@local/dsh-native-retract'
+      config: {}

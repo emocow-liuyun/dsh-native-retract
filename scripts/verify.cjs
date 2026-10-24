@@ -1,0 +1,12 @@
+const DTOP = process.env.REMOTE_BASE || 'http://127.0.0.1:3080/myremote';
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+(async()=>{const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const context=await browser.newContext({viewport:{width:1280,height:900}});const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const code=(await(await fetch(`${DTOP}/code`,{method:'POST'})).json()).code;
+await context.request.post(`${DTOP}/pair`,{headers:{'x-pair-code':code}});
+await page.goto(`${DTOP}/`);await page.waitForTimeout(3500);
+await page.addStyleTag({content:'.dshp-auth-mask,.dshp-disclaimer-mask {display:none!important}'});
+console.log('BODY',(await page.locator('body').innerText()).slice(0,500));
+await page.getByText('新增原生消息撤回按钮',{exact:true}).click();await page.waitForTimeout(2000); console.log('RETRACT_BUTTONS',await page.getByRole('button',{name:'撤回',exact:true}).count()); await page.screenshot({path:__dirname+'/conversation.png'});
+console.log('BOOT',await page.evaluate(()=>Object.keys(window.__DSH_BOOT__||{})));
+console.log('BUTTONS',await page.locator('button').evaluateAll(es=>es.map(e=>({t:e.innerText,a:e.getAttribute('aria-label')})).slice(0,70)));
+await page.screenshot({path:__dirname+'/initial.png'});console.log('ERRORS',errors);await browser.close()})().catch(e=>{console.error(e);process.exitCode=1});

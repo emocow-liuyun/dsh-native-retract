@@ -1,0 +1,23 @@
+{
+  "name": "@local/dsh-native-retract",
+  "version": "1.0.0",
+  "description": "Native conversation retract for DSH: a Retract button beside Copy on user messages, same session, log retained.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "emocow-liuyun",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emocow-liuyun/dsh-native-retract.git"
+  },
+  "keywords": ["dsh", "deepseek-harness", "cordis", "plugin", "retract", "rewind"],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}
