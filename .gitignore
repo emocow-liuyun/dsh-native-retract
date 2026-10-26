@@ -1,4 +1,6 @@
 backups/
+.migration-backup/
+*.adapter.json
 node_modules/
 *.log
 .DS_Store

@@ -1,22 +1,214 @@
 import assert from 'node:assert/strict';
+
 const DSH_ROOT = process.env.DSH_ROOT || '/opt/DeepSeek Harness/resources/dsh';
-const DSH_PKG = (name) => `${DSH_ROOT}/node_modules/@deepseek-ai/${name}`;
-const {Session,SessionSeq} = await import(DSH_PKG('dsh-session/lib/index.js'));
-const {retract} = await import('../index.js');
-const s=Session.create('session-native-retract-test');
-const user=(text)=>s.append('user/message',{id:'m-'+s.seq,role:'user',source:{kind:'user'},content:[{type:'text',text}]},{surfaceOp:'append'});
-s.append('turn/start',{turn:1});const first=user('keep');s.append('turn/end',{turn:1,reason:{kind:'completed'}});
-s.append('turn/start',{turn:2});const second=user('restore me');s.append('turn/end',{turn:2,reason:{kind:'completed'}});
-s.append('turn/start',{turn:3});user('later');s.append('turn/end',{turn:3,reason:{kind:'completed'}});
-let cancelled=0,flushed=0;const agent={session:s,cancel(){cancelled++},async whenIdle(){},async runMaintenance(fn){return fn()}};
-const result=await retract({sessions:{async flush(){flushed++}}},agent,second.seq);
-assert.equal(result.text,'restore me');assert.equal(result.cut,3);assert.equal(cancelled,1);assert.equal(flushed,1);
-assert(s.surface.nodes.includes(first.seq));assert(!s.surface.nodes.includes(second.seq));assert(!s.deriveMessages().some(m=>m.content.some(b=>b.text==='later')));
-assert(s.snapshotEvents().some(e=>e.seq===second.seq));
-await assert.rejects(()=>retract({sessions:{}},agent,second.seq),/已撤回/);
-const after=user('new path');assert(s.deriveMessages().some(m=>m.id===after.data.id));
-const fs=await import('node:fs');let code=fs.readFileSync(DSH_PKG('dsh-client-ui-conversation/lib/client.js'),'utf8');
-const source=code.slice(code.indexOf('function nativeRetractVisible('),code.indexOf('var ConversationNodeAssembler = class'));
-const visible=new Function(source+';return nativeRetractVisible')( )(s.snapshotEvents().map(event=>({event})));
-assert(visible.some(r=>r.event.seq===first.seq));assert(!visible.some(r=>r.event.seq===second.seq));assert(visible.some(r=>r.event.seq===after.seq));
-console.log('PASS: exact boundary, retained prefix/log, draft, model history, duplicate protection, new branch, UI replay filter');
+const DSH_PKG = name => `${DSH_ROOT}/node_modules/@deepseek-ai/${name}`;
+const { Session } = await import(DSH_PKG('dsh-session/lib/index.js'));
+const { retract } = await import('../index.js');
+
+function fixture() {
+  const session = Session.create('session-native-retract-test');
+  const user = (text, source = { kind: 'user' }) => session.append('user/message', {
+    id: `m-${session.seq}`, role: 'user', source,
+    content: [{ type: 'text', text }],
+  }, { surfaceOp: 'append' });
+  session.append('turn/start', { turn: 1 });
+  const first = user('keep');
+  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } });
+  session.append('turn/start', { turn: 2 });
+  const second = user('restore me\nwith two lines');
+  session.append('turn/end', { turn: 2, reason: { kind: 'completed' } });
+  session.append('turn/start', { turn: 3 });
+  const later = user('later');
+  session.append('turn/end', { turn: 3, reason: { kind: 'completed' } });
+  let cancelled = 0;
+  let flushed = 0;
+  const agent = {
+    session,
+    cancel(cause, options) { cancelled++; assert.equal(cause.kind, 'user'); assert.equal(options, undefined); },
+    async whenIdle() {},
+    async runMaintenance(task) { return task(new AbortController().signal); },
+  };
+  return {
+    session, first, second, later, user, agent,
+    ctx: { sessions: { async flush(target) { assert.equal(target, session); flushed++; } } },
+    stats: () => ({ cancelled, flushed }),
+  };
+}
+
+// Surface boundaries, model history, original log, exact draft text, and repeat operations.
+{
+  const { session, first, second, agent, ctx, stats } = fixture();
+  const result = await retract(ctx, agent, second.seq);
+  assert.deepEqual(stats(), { cancelled: 1, flushed: 1 });
+  assert.equal(result.cut, second.seq);
+  assert.equal(result.checkpointSeq, session.seq - 1);
+  assert.equal(result.text, 'restore me\nwith two lines');
+  assert.deepEqual(session.surface.nodes.filter(n => n >= second.seq), [result.checkpointSeq]);
+  assert(session.surface.nodes.includes(first.seq));
+  assert(!session.deriveMessages().some(m => m.content.some(b => b.text === 'later')));
+  assert(session.snapshotEvents().some(e => e.seq === second.seq));
+  await assert.rejects(() => retract(ctx, agent, second.seq), /已撤回/);
+  const after = session.append('user/message', {
+    id: 'after', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'new path' }],
+  }, { surfaceOp: 'append' });
+  assert(session.deriveMessages().some(m => m.id === after.data.id));
+  // A different surviving user message may be retracted in a later operation.
+  const secondResult = await retract(ctx, agent, first.seq);
+  assert.equal(secondResult.cut, first.seq);
+  assert.equal(secondResult.text, 'keep');
+  assert.deepEqual(session.surface.nodes, [secondResult.checkpointSeq]);
+  assert.deepEqual(stats(), { cancelled: 2, flushed: 2 });
+}
+
+// Invalid coordinates, replacement events, non-human messages and busy state.
+{
+  const { session, agent, ctx } = fixture();
+  const first = session.surface.nodes[0];
+  for (const value of [NaN, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, 99999]) {
+    await assert.rejects(() => retract(ctx, agent, value), /请选择已发送的用户消息/);
+  }
+  const replacement = session.snapshotEvents().at(-1);
+  await assert.rejects(() => retract(ctx, agent, replacement.seq), /请选择已发送的用户消息/);
+  const injected = session.append('user/message', {
+    id: 'injected', role: 'user', source: { kind: 'plugin' }, content: [{ type: 'text', text: 'context' }],
+  }, { surfaceOp: 'append' });
+  await assert.rejects(() => retract(ctx, agent, injected.seq), /请选择已发送的用户消息/);
+  assert(first !== undefined);
+}
+
+// Concurrent operations serialize; only the first one commits against this prefix.
+{
+  const { session, second, agent, ctx, stats } = fixture();
+  const results = await Promise.allSettled([
+    retract(ctx, agent, second.seq),
+    retract(ctx, agent, second.seq),
+  ]);
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[1].status, 'rejected');
+  assert.deepEqual(stats(), { cancelled: 1, flushed: 1 });
+}
+
+// Cancel before maintenance, wait for idle, and do not swallow cancellation.
+{
+  const { session, second, ctx } = fixture();
+  const calls = [];
+  const agent = {
+    session,
+    cancel() { calls.push('cancel'); },
+    async whenIdle() { calls.push('idle'); },
+    async runMaintenance(task) { calls.push('maintenance'); return task(AbortSignal.abort()); },
+  };
+  await assert.rejects(() => retract(ctx, agent, second.seq), /撤回已取消/);
+  assert.deepEqual(calls, ['cancel', 'idle', 'maintenance']);
+}
+
+// Browser bundle: official Factory content, native Slot override, hidden-only
+// checkpoint/command definitions, and no DSH feature-module imports.
+{
+  let definition;
+  globalThis.window = {
+    __ModuleLoader__: { load(value) { definition = value; } },
+  };
+  await import('../client.js');
+  assert.equal(definition.id, '@local/dsh-native-retract');
+  const module = definition.factory(require => {
+    assert.equal(require, 'react');
+    return { createElement: (type, props, ...children) => ({ type, props, children }) };
+  });
+  assert.deepEqual(module.inject, ['slots', 'uiConversation', 'remote', 'remote.commands', 'locale']);
+
+  const effects = [];
+  const definitions = [];
+  const injected = [];
+  const ctx = {
+    locale: { register: () => () => {} },
+    uiConversation: { events: { register(value) { definitions.push(value); return () => {}; } } },
+    slots: {
+      inject(name, callback) {
+        assert(['conversation.chat.node', 'conversation.chat.commandview'].includes(name));
+        callback();
+      },
+      register(options, component) { injected.push({ options, component }); return () => {}; },
+    },
+    remote: { commands: {} },
+    effect(callback) { effects.push(callback); return () => {}; },
+  };
+  globalThis.document = {
+    createElement: () => ({ dataset: {}, textContent: '', remove() {} }),
+    head: { appendChild() {} },
+  };
+  module.apply(ctx);
+  for (const effect of effects) effect();
+
+  assert.equal(injected.length, 3);
+  assert.equal(injected[0].options.key, 'native-retract');
+  assert.equal(injected[0].options.priority, -1);
+  assert.equal(injected[1].options.key, 'user');
+  assert.equal(injected[1].options.priority, -1);
+  assert.equal(injected[2].options.key, 'steering');
+  assert.equal(injected[2].options.priority, -1);
+  assert.equal(injected[0].options.children, undefined);
+  assert.equal(definitions.length, 1);
+  for (const definition of definitions) {
+    const match = definition.match;
+    assert.equal(definition.target, 'chat');
+    assert.equal(typeof definition.start, 'function');
+    assert.equal(typeof definition.buildViewNode, 'function');
+  }
+  const [checkpoint] = definitions;
+  const event = {
+    type: 'user/message', seq: 9, time: 1000,
+    data: { id: 'rewind-native:4:550e8400-e29b-41d4-a716-446655440000' },
+    surfaceOp: { op: 'replace', startSeq: 4, endSeq: 8 },
+    sourceEventSeqs: [4, 6, 8],
+  };
+  assert.equal(checkpoint.match(event).exclusive, true);
+  assert.equal(checkpoint.match({ ...event, sourceEventSeqs: undefined }), null);
+  assert.equal(checkpoint.match({ ...event, data: { id: 'rewind-native:4:550e8400-e29b-41d4-a716-446655440000' }, surfaceOp: undefined }), null);
+  assert.equal(checkpoint.match({ ...event, sourceEventSeqs: undefined }), null);
+  assert.equal(checkpoint.match({ ...event, surfaceOp: 'append' }), null);
+  assert.equal(checkpoint.match({ ...event, data: { id: 'ordinary' } }), null);
+  const start = checkpoint.start({}, { event });
+  const hidden = checkpoint.buildViewNode({ key: 'key', id: 'id', state: start, start: { location: { kind: 'unresolved' } } });
+  assert.equal(hidden.visibility, 'hidden');
+  assert.equal(hidden.anchorSeq, 9);
+  assert.equal(hidden.data.time, event.time);
+  assert.equal(injected[0].options.key, 'native-retract');
+  assert.equal(injected[0].options.priority, -1);
+  assert.equal(injected[0].component().type, 'span');
+
+  const retractMessage = injected[1].options.inject('session-1').retractMessage;
+  const calls = [];
+  ctx.remote.commands.execute = async (...args) => {
+    calls.push(args);
+    return { ok: true, value: { result: { kind: 'success', text: '{"text":"original"}' } } };
+  };
+  assert.deepEqual(await retractMessage('session-1', 3), { text: 'original' });
+  assert.deepEqual(calls, [['session-1', '/native-retract 3', []]]);
+  await assert.rejects(() => retractMessage('other-session', 3), /stale-session/);
+  ctx.remote.commands.execute = async () => ({ ok: true, value: { result: { kind: 'error', text: 'busy' } } });
+  await assert.rejects(() => retractMessage('session-1', 3), /busy/);
+  ctx.remote.commands.execute = async () => ({ ok: false, error: { message: 'offline' } });
+  await assert.rejects(() => retractMessage('session-1', 3), /offline/);
+}
+
+console.log('PASS: surface/model history, original log, exact draft text, cancellation, repeated retract, native Slot/Factory, hidden replay, command results');
+
+// Adapter range contract mirrors the sourceEventSeqs written by Session.replace:
+// hide only the original source range, keep the checkpoint and unrelated events.
+{
+  const entries = [
+    { event: { seq: 2, type: 'user/message', data: { id: 'keep' }, surfaceOp: 'append' } },
+    { event: { seq: 4, type: 'assistant/message', data: {} } },
+    { event: { seq: 6, type: 'tool/result', data: {} } },
+    { event: { seq: 7, type: 'user/message', data: { id: 'later' }, surfaceOp: 'append' } },
+    { event: { seq: 8, type: 'turn/end', data: { turn: 1 } } },
+    { event: { seq: 9, type: 'user/message', data: { id: 'rewind-native:4:550e8400-e29b-41d4-a716-446655440000' }, surfaceOp: { op: 'replace', startSeq: 4, endSeq: 7 }, sourceEventSeqs: [4, 6, 7] } },
+    { event: { seq: 10, type: 'user/message', data: { id: 'after' }, surfaceOp: 'append' } },
+  ];
+  const checkpoint = entries[5].event;
+  const { startSeq } = checkpoint.surfaceOp;
+  const endSeq = checkpoint.seq - 1;
+  const visible = entries.filter(row => row.event.seq < startSeq || row.event.seq > endSeq);
+  assert.deepEqual(visible.map(row => row.event.seq), [2, 9, 10]);
+}

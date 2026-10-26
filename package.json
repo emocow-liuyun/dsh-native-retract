@@ -1,7 +1,7 @@
 {
   "name": "@local/dsh-native-retract",
-  "version": "1.0.0",
-  "description": "Native conversation retract for DSH: a Retract button beside Copy on user messages, same session, log retained.",
+  "version": "2.0.0",
+  "description": "A native Retract action beside Copy in the DSH user-message row; preserves the event log and reuses the built-in content renderer.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -13,11 +13,24 @@
   "keywords": ["dsh", "deepseek-harness", "cordis", "plugin", "retract", "rewind"],
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" }
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
   }
 }

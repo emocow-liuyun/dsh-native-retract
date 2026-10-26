@@ -1,1 +1,1 @@
-{"meta":{"title":"Conversation retract","description":"Retract a user message and later conversation using native message controls."}}
+{"meta":{"title":"Conversation retract","description":"Adds Retract beside Copy on user messages, preserves the event log, and reuses native message rendering."}}
