@@ -125,7 +125,7 @@ function fixture() {
     uiConversation: { events: { register(value) { definitions.push(value); return () => {}; } } },
     slots: {
       inject(name, callback) {
-        assert(['conversation.chat.node', 'conversation.chat.commandview'].includes(name));
+        assert.equal(name, 'conversation.chat.node');
         callback();
       },
       register(options, component) { injected.push({ options, component }); return () => {}; },
@@ -140,15 +140,12 @@ function fixture() {
   module.apply(ctx);
   for (const effect of effects) effect();
 
-  assert.equal(injected.length, 3);
-  assert.equal(injected[0].options.key, 'native-retract');
+  assert.equal(injected.length, 2);
+  assert.equal(injected[0].options.key, 'user');
   assert.equal(injected[0].options.priority, -1);
-  assert.equal(injected[1].options.key, 'user');
+  assert.equal(injected[1].options.key, 'steering');
   assert.equal(injected[1].options.priority, -1);
-  assert.equal(injected[2].options.key, 'steering');
-  assert.equal(injected[2].options.priority, -1);
-  assert.equal(injected[0].options.children, undefined);
-  assert.equal(definitions.length, 1);
+  assert.equal(definitions.length, 2);
   for (const definition of definitions) {
     const match = definition.match;
     assert.equal(definition.target, 'chat');
@@ -173,11 +170,22 @@ function fixture() {
   assert.equal(hidden.visibility, 'hidden');
   assert.equal(hidden.anchorSeq, 9);
   assert.equal(hidden.data.time, event.time);
-  assert.equal(injected[0].options.key, 'native-retract');
-  assert.equal(injected[0].options.priority, -1);
-  assert.equal(injected[0].component().type, 'span');
+  const [checkpointOnly, retractCommand] = definitions;
+  assert.equal(retractCommand.kind, 'native-retract-command');
+  assert.equal(retractCommand.target, 'chat');
+  assert.equal(retractCommand.match({ type: 'command/run', data: { name: 'other', commandId: 'c1' } }), null);
+  assert.equal(retractCommand.match({ type: 'command/done', data: { commandId: 'c1', text: 'plain error' } }), null);
+  assert.equal(retractCommand.match({ type: 'command/done', data: { commandId: 'c1', text: '{"nativeRetract":false}' } }), null);
+  assert.equal(retractCommand.match({ type: 'command/done', data: { commandId: 'c1', text: '{"cut":3,"checkpointSeq":9,"text":"x"}' } }).exclusive, true);
+  assert.equal(retractCommand.match({ type: 'command/run', data: { name: 'native-retract', commandId: 'c1' } }).exclusive, true);
+  const commandState = retractCommand.start({}, { event: { seq: 7, type: 'command/run', data: { name: 'native-retract', commandId: 'c1' } } });
+  const commandHidden = retractCommand.buildViewNode({
+    key: 'k', id: 'c1', state: commandState, start: { location: { kind: 'unresolved' } },
+  });
+  assert.equal(commandHidden.visibility, 'hidden');
+  assert.equal(checkpointOnly.kind, 'native-retract-checkpoint');
 
-  const retractMessage = injected[1].options.inject('session-1').retractMessage;
+  const retractMessage = injected[0].options.inject('session-1').retractMessage;
   const calls = [];
   ctx.remote.commands.execute = async (...args) => {
     calls.push(args);

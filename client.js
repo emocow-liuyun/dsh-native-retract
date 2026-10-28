@@ -38,7 +38,6 @@ window.__ModuleLoader__.load({
 :is([data-chat-flow-kind=user],[data-chat-flow-kind=steering]):has(~:is([data-chat-flow-kind=user],[data-chat-flow-kind=steering])):focus-within .native-retract-actions{opacity:1}}
 .native-retract-error{display:flex;align-items:center;gap:8px;max-width:100%;color:var(--dsw-alias-state-error-primary);font-size:var(--dsh-content-font-size-secondary,13px);line-height:20px;overflow-wrap:anywhere}
 .native-retract-error button{flex:none;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;text-decoration:underline;cursor:pointer}
-[data-chat-flow-kind=command]:has(.native-retract-hidden-command){display:none!important}
 @media (prefers-reduced-motion:reduce){.native-retract-actions{transition:none!important}}
 `;
 
@@ -205,9 +204,33 @@ window.__ModuleLoader__.load({
       },
     };
 
-    function NativeRetractCommandView() {
-      return h('span', { className: 'native-retract-hidden-command', hidden: true });
-    }
+    /**
+     * The retract action runs an internal /native-retract command. Its JSON
+     * result is an implementation detail, so this definition claims that exact
+     * command lifecycle and builds a hidden node instead of a command card.
+     */
+    const commandDefinition = {
+      kind: 'native-retract-command', target: 'chat',
+      match: (event) => {
+        if (event.type === 'command/run') {
+          if (event.data?.name !== COMMAND) return null;
+          return { id: String(event.data.commandId), role: 'start', exclusive: true };
+        }
+        if (event.type !== 'command/done') return null;
+        let parsed;
+        try { parsed = JSON.parse(event.data?.text ?? ''); } catch { return null; }
+        if (parsed === null || typeof parsed !== 'object'
+          || !Number.isSafeInteger(parsed.cut) || !Number.isSafeInteger(parsed.checkpointSeq)) return null;
+        return { id: String(event.data.commandId), role: 'update', exclusive: true };
+      },
+      start: (_context, match) => ({ seq: match.event.seq }),
+      update: (context) => context.state,
+      buildViewNode: (context) => context.state === undefined ? null : {
+        key: context.key, kind: 'unknown', id: context.id, target: 'chat',
+        anchorSeq: context.state.seq, location: context.start?.location ?? { kind: 'unresolved' },
+        visibility: 'hidden', data: { kind: 'unknown', seq: context.state.seq, time: context.state.time, type: 'native-retract-command', data: {} },
+      },
+    };
 
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'native-retract: locale');
@@ -219,9 +242,7 @@ window.__ModuleLoader__.load({
         return () => style.remove();
       }, 'native-retract: styles');
       ctx.effect(() => ctx.uiConversation.events.register(checkpointDefinition), 'native-retract: checkpoint');
-      ctx.slots.inject('conversation.chat.commandview', () => ctx.slots.register({
-        name: 'conversation.chat.commandview', key: COMMAND, priority: -1, locale: NS,
-      }, NativeRetractCommandView));
+      ctx.effect(() => ctx.uiConversation.events.register(commandDefinition), 'native-retract: command');
       for (const key of ['user', 'steering']) {
         ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
           name: 'conversation.chat.node', key, priority: -1, locale: NS,
