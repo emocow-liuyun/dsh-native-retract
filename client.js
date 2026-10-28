@@ -144,12 +144,13 @@ window.__ModuleLoader__.load({
         setFailure(null);
         try {
           const result = await retractMessage(sessionId, data.seq);
-          if (id !== epoch.current) return;
-          // Preserve edits typed while the Host cancelled and replaced the surface.
+          // The Host already replaced the surface: restore the draft even when
+          // this node unmounted, otherwise the message silently disappears.
+          const live = mounted.current && id === epoch.current;
           const latestDraft = currentDraft.current;
           if (latestDraft.draftRev !== baselineDraft.draftRev || latestDraft.draft !== baselineDraft.draft) {
             const copiedToClipboard = await copyText(result.text);
-            if (id !== epoch.current) return;
+            if (!live) return;
             if (!copiedToClipboard) {
               setFailure('draft-changed-copy-failed');
               return;
@@ -160,9 +161,9 @@ window.__ModuleLoader__.load({
           inputActions.setDraft(result.text);
           inputActions.persistDraft();
         } catch (error) {
-          if (id === epoch.current) setFailure(error?.message || String(error));
+          if (mounted.current && id === epoch.current) setFailure(error?.message || String(error));
         } finally {
-          if (id === epoch.current) setPending(false);
+          if (mounted.current && id === epoch.current) setPending(false);
         }
       };
 

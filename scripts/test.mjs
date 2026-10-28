@@ -194,8 +194,9 @@ function fixture() {
 
 console.log('PASS: surface/model history, original log, exact draft text, cancellation, repeated retract, native Slot/Factory, hidden replay, command results');
 
-// Adapter range contract mirrors the sourceEventSeqs written by Session.replace:
-// hide only the original source range, keep the checkpoint and unrelated events.
+// Adapter range contract: hide [startSeq, checkpointSeq - 1] so log-only tail
+// events (turn/end, turn/start) cannot survive the retract, and keep the
+// checkpoint plus everything after it.
 {
   const entries = [
     { event: { seq: 2, type: 'user/message', data: { id: 'keep' }, surfaceOp: 'append' } },
@@ -207,8 +208,13 @@ console.log('PASS: surface/model history, original log, exact draft text, cancel
     { event: { seq: 10, type: 'user/message', data: { id: 'after' }, surfaceOp: 'append' } },
   ];
   const checkpoint = entries[5].event;
-  const { startSeq } = checkpoint.surfaceOp;
-  const endSeq = checkpoint.seq - 1;
-  const visible = entries.filter(row => row.event.seq < startSeq || row.event.seq > endSeq);
+  const start = checkpoint.surfaceOp.startSeq;
+  const end = checkpoint.seq - 1;
+  const visible = entries.filter(row => row.event.seq < start || row.event.seq > end);
   assert.deepEqual(visible.map(row => row.event.seq), [2, 9, 10]);
+  assert.deepEqual(
+    entries.filter(row => row.event.seq >= start && row.event.seq <= end).map(row => row.event.seq),
+    [4, 6, 7, 8],
+    'turn/end at 8 is inside the hidden range, not left dangling',
+  );
 }
