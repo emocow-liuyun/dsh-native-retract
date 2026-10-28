@@ -59,6 +59,17 @@ async function retractExclusive(ctx, agent, seq) {
       sourceEventSeqs: nodes,
     });
     await ctx.sessions.flush(session);
+    // A retracted message may be image-only. The browser cannot rebuild a
+    // composer attachment from a durable reference, so report the attachment
+    // count and let the composer surface it instead of returning silently.
+    const attachments = target.data.content
+      .filter(block => (block.type === 'image' || block.type === 'file') && block.attachment !== undefined)
+      .map(block => ({
+        type: block.type,
+        attachmentId: block.attachment?.attachmentId,
+        name: block.attachment?.name,
+      }))
+      .filter(entry => typeof entry.attachmentId === 'string');
     return {
       cut: seq,
       checkpointSeq: checkpoint.seq,
@@ -66,6 +77,7 @@ async function retractExclusive(ctx, agent, seq) {
         .filter(block => block.type === 'text' && typeof block.text === 'string')
         .map(block => block.text)
         .join(''),
+      attachments,
     };
   });
 }

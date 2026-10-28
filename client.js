@@ -11,6 +11,9 @@ window.__ModuleLoader__.load({
     const zh = {
       copy: '复制', copied: '已复制', copyFailed: '复制失败', retract: '撤回',
       retracting: '撤回中…', failed: '撤回失败', dismiss: '关闭错误提示',
+      imageSavedOne: '图片已保存到下载目录，可直接重新附加。',
+      imageSavedMany: '{count} 张图片已保存到下载目录，可直接重新附加。',
+      imageNotRestoredNone: '这条消息含 {count} 个附件，DSH 无法把它们放回输入框。',
       draftChanged: '输入框在撤回期间已变化，原文已复制到剪贴板。',
       draftChangedCopyFailed: '输入框已变化，原文未复制；请从撤回历史重新复制。',
       'clock.md': '{m}月{d}日', 'clock.ymd': '{y}年{m}月{d}日',
@@ -18,6 +21,9 @@ window.__ModuleLoader__.load({
     const en = {
       copy: 'Copy', copied: 'Copied', copyFailed: 'Copy failed', retract: 'Retract',
       retracting: 'Retracting…', failed: 'Retract failed', dismiss: 'Dismiss error',
+      imageSavedOne: 'The image was saved to your downloads and can be attached again.',
+      imageSavedMany: '{count} images were saved to your downloads and can be attached again.',
+      imageNotRestoredNone: 'This message carried {count} attachments that DSH cannot return to the composer.',
       draftChanged: 'The draft changed while retracting. The original message was copied to the clipboard.',
       draftChangedCopyFailed: 'The draft changed and copying the original message failed. Copy it from the retracted history.',
       'clock.md': '{m}/{d}', 'clock.ymd': '{y}-{m}-{d}',
@@ -87,6 +93,42 @@ window.__ModuleLoader__.load({
       if (!navigator.clipboard?.writeText) return false;
       try { await navigator.clipboard.writeText(text); return true; }
       catch { return false; }
+    }
+
+    /**
+     * DSH keeps pasted images as browser-only draft attachments: the durable
+     * reference cannot be re-admitted through any plugin-visible verb, so a
+     * retracted image message cannot return to the composer by itself. Read the
+     * bytes back through the session-authorized loader and hand them to the user
+     * as a download instead of dropping them, so nothing is silently lost.
+     */
+    async function rescueImages(result, loadImage, t) {
+      const entries = Array.isArray(result?.attachments) ? result.attachments : [];
+      if (entries.length === 0) return null;
+      let saved = 0;
+      for (const entry of entries) {
+        if (entry?.type !== 'image' || entry.attachment === undefined) continue;
+        let url;
+        try { url = await loadImage(entry.attachment); } catch { continue; }
+        try {
+          const response = await fetch(url);
+          const blob = await response.blob();
+          const name = typeof entry.attachment.name === 'string' && entry.attachment.name !== ''
+            ? entry.attachment.name : 'image.png';
+          const href = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = href;
+          anchor.download = name;
+          anchor.rel = 'noopener';
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(href), 10000);
+          saved += 1;
+        } catch { continue; }
+      }
+      if (saved === 0) return t('imageNotRestoredNone', { count: entries.length });
+      return t(saved === 1 ? 'imageSavedOne' : 'imageSavedMany', { count: saved });
     }
 
     function UserMessageNodeView(props) {
@@ -159,6 +201,10 @@ window.__ModuleLoader__.load({
           }
           inputActions.setDraft(result.text);
           inputActions.persistDraft();
+          // Image messages cannot return to the composer; hand the bytes over
+          // and say so, rather than leaving an empty box with no explanation.
+          const notice = await rescueImages(result, props.loadImage, t);
+          if (notice !== null && mounted.current && id === epoch.current) setFailure(notice);
         } catch (error) {
           if (mounted.current && id === epoch.current) setFailure(error?.message || String(error));
         } finally {

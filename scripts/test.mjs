@@ -192,6 +192,13 @@ function fixture() {
     return { ok: true, value: { result: { kind: 'success', text: '{"text":"original"}' } } };
   };
   assert.deepEqual(await retractMessage('session-1', 3), { text: 'original' });
+  ctx.remote.commands.execute = async () => ({
+    ok: true,
+    value: { result: { kind: 'success', text: '{"cut":9,"checkpointSeq":23,"text":"","attachments":[{"type":"image","attachmentId":"sha256:abc","name":"image.png"}]}' } },
+  });
+  const imageOnly = await retractMessage('session-1', 9);
+  assert.equal(imageOnly.text, '');
+  assert.deepEqual(imageOnly.attachments, [{ type: 'image', attachmentId: 'sha256:abc', name: 'image.png' }]);
   assert.deepEqual(calls, [['session-1', '/native-retract 3', []]]);
   await assert.rejects(() => retractMessage('other-session', 3), /stale-session/);
   ctx.remote.commands.execute = async () => ({ ok: true, value: { result: { kind: 'error', text: 'busy' } } });
