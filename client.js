@@ -11,9 +11,7 @@ window.__ModuleLoader__.load({
     const zh = {
       copy: '复制', copied: '已复制', copyFailed: '复制失败', retract: '撤回',
       retracting: '撤回中…', failed: '撤回失败', dismiss: '关闭错误提示',
-      imageSavedOne: '图片已保存到下载目录，可直接重新附加。',
-      imageSavedMany: '{count} 张图片已保存到下载目录，可直接重新附加。',
-      imageNotRestoredNone: '这条消息含 {count} 个附件，DSH 无法把它们放回输入框。',
+      imageNotRestored: '{count} 张图片未能放回输入框，请重新粘贴。',
       draftChanged: '输入框在撤回期间已变化，原文已复制到剪贴板。',
       draftChangedCopyFailed: '输入框已变化，原文未复制；请从撤回历史重新复制。',
       'clock.md': '{m}月{d}日', 'clock.ymd': '{y}年{m}月{d}日',
@@ -21,9 +19,7 @@ window.__ModuleLoader__.load({
     const en = {
       copy: 'Copy', copied: 'Copied', copyFailed: 'Copy failed', retract: 'Retract',
       retracting: 'Retracting…', failed: 'Retract failed', dismiss: 'Dismiss error',
-      imageSavedOne: 'The image was saved to your downloads and can be attached again.',
-      imageSavedMany: '{count} images were saved to your downloads and can be attached again.',
-      imageNotRestoredNone: 'This message carried {count} attachments that DSH cannot return to the composer.',
+      imageNotRestored: '{count} image(s) could not be returned to the composer; paste them again.',
       draftChanged: 'The draft changed while retracting. The original message was copied to the clipboard.',
       draftChangedCopyFailed: 'The draft changed and copying the original message failed. Copy it from the retracted history.',
       'clock.md': '{m}/{d}', 'clock.ymd': '{y}-{m}-{d}',
@@ -96,39 +92,34 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * DSH keeps pasted images as browser-only draft attachments: the durable
-     * reference cannot be re-admitted through any plugin-visible verb, so a
-     * retracted image message cannot return to the composer by itself. Read the
-     * bytes back through the session-authorized loader and hand them to the user
-     * as a download instead of dropping them, so nothing is silently lost.
+     * Put a retracted message's images back into the composer.
+     *
+     * The durable reference is fetched through the session-authorized loader,
+     * rebuilt as a File, and re-admitted through the composer's own intake verb
+     * (`inputActions.addImageFiles`, installed by scripts/patch-image-intake.cjs)
+     * so the draft rail renders them exactly like a fresh paste.
      */
-    async function rescueImages(result, loadImage, t) {
+    async function restoreImages(result, inputActions, loadImage, t) {
       const entries = Array.isArray(result?.attachments) ? result.attachments : [];
-      if (entries.length === 0) return null;
-      let saved = 0;
-      for (const entry of entries) {
-        if (entry?.type !== 'image' || entry.attachment === undefined) continue;
+      const images = entries.filter(entry => entry?.type === 'image' && entry.attachment !== undefined);
+      if (images.length === 0) return null;
+      if (typeof inputActions?.addImageFiles !== 'function') return t('imageNotRestored', { count: images.length });
+      const files = [];
+      for (const entry of images) {
         let url;
         try { url = await loadImage(entry.attachment); } catch { continue; }
         try {
-          const response = await fetch(url);
-          const blob = await response.blob();
-          const name = typeof entry.attachment.name === 'string' && entry.attachment.name !== ''
-            ? entry.attachment.name : 'image.png';
-          const href = URL.createObjectURL(blob);
-          const anchor = document.createElement('a');
-          anchor.href = href;
-          anchor.download = name;
-          anchor.rel = 'noopener';
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-          setTimeout(() => URL.revokeObjectURL(href), 10000);
-          saved += 1;
+          const blob = await (await fetch(url)).blob();
+          const reference = entry.attachment;
+          const name = typeof reference.name === 'string' && reference.name !== '' ? reference.name : 'image.png';
+          const type = typeof reference.mediaType === 'string' && reference.mediaType !== ''
+            ? reference.mediaType : (blob.type || 'image/png');
+          files.push(new File([blob], name, { type }));
         } catch { continue; }
       }
-      if (saved === 0) return t('imageNotRestoredNone', { count: entries.length });
-      return t(saved === 1 ? 'imageSavedOne' : 'imageSavedMany', { count: saved });
+      if (files.length === 0) return t('imageNotRestored', { count: images.length });
+      if (inputActions.addImageFiles(files) === false) return t('imageNotRestored', { count: files.length });
+      return null;
     }
 
     function UserMessageNodeView(props) {
@@ -201,9 +192,9 @@ window.__ModuleLoader__.load({
           }
           inputActions.setDraft(result.text);
           inputActions.persistDraft();
-          // Image messages cannot return to the composer; hand the bytes over
-          // and say so, rather than leaving an empty box with no explanation.
-          const notice = await rescueImages(result, props.loadImage, t);
+          // A retracted image message must come back into the draft rail, not
+          // just restore text: fetch the bytes and re-admit them as a paste.
+          const notice = await restoreImages(result, inputActions, props.loadImage, t);
           if (notice !== null && mounted.current && id === epoch.current) setFailure(notice);
         } catch (error) {
           if (mounted.current && id === epoch.current) setFailure(error?.message || String(error));
